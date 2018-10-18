@@ -5,16 +5,16 @@ import com.github.ricksbrown.cowsay.Cowsay
 import javafx.application.Application
 import javafx.beans.Observable
 import javafx.event.ActionEvent
-import javafx.event.EventHandler
 import javafx.fxml.FXMLLoader
 import javafx.scene.Scene
 import javafx.scene.control.*
-import javafx.scene.input.DragEvent
 import javafx.scene.input.TransferMode
+import javafx.stage.FileChooser
 import javafx.stage.Stage
 import net.corda.client.jfx.utils.observeOnFXThread
 import net.corda.client.rpc.CordaRPCClient
 import net.corda.core.contracts.*
+import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FinalityFlow
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.InitiatingFlow
@@ -43,11 +43,18 @@ import java.time.ZoneId
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.system.exitProcess
+import javafx.scene.control.ButtonType
+import javafx.scene.control.ButtonBar.ButtonData
+import javafx.scene.control.Alert.AlertType
+import javafx.scene.control.Alert
+
+
 
 class Chat : Contract {
     @CordaSerializable
     data class Message(val message: String, val to: AbstractParty, val from: AbstractParty,
-                       override val participants: List<AbstractParty> = listOf(to, from)) : ContractState
+                       override val participants: List<AbstractParty> = listOf(to, from),
+                       val secureHash: SecureHash? = null) : ContractState
 
     object SendChatCommand : TypeOnlyCommandData()
 
@@ -62,7 +69,7 @@ class Chat : Contract {
 
 @InitiatingFlow
 @StartableByRPC
-class SendChat(private val to: Party, private val message: String) : FlowLogic<Unit>() {
+class SendChat(private val to: Party, private val message: String, private val secureHash: SecureHash?) : FlowLogic<Unit>() {
     override val progressTracker = ProgressTracker(object : ProgressTracker.Step("Sending") {})
 
     @Suspendable
@@ -76,7 +83,13 @@ class SendChat(private val to: Party, private val message: String) : FlowLogic<U
         val notary = serviceHub.networkMapCache.notaryIdentities.first()
         val txb = TransactionBuilder(notary)
         val me = ourIdentityAndCert.party
-        txb.addOutputState(Chat.Message(message, to, me), Chat::class.qualifiedName!!)
+        txb.addOutputState(Chat.Message(message, to, me, secureHash = secureHash), Chat::class.qualifiedName!!)
+
+        println("****")
+        println("$this -->  ${this.secureHash}")
+        println("****")
+
+        if (secureHash != null) txb.addAttachment(secureHash)
         txb.addCommand(Chat.SendChatCommand, me.owningKey)
         return serviceHub.signInitialTransaction(txb)
     }
@@ -117,6 +130,9 @@ class ChatApp : Application() {
             stage.height = 580.0
         }
         stage.show()
+
+        controller.onFileReceived(stage)
+
     }
 }
 
@@ -127,9 +143,14 @@ class ChatUIController {
         override fun toString() = party.name.organisation
     }
 
+    class ClickableFile(val filename: String, val secureHash: SecureHash) {
+
+    }
+
     lateinit var textArea: TextArea
     lateinit var messageEdit: TextField
     lateinit var identitiesList: ListView<ClickableParty>
+    lateinit var fileList: ListView<ClickableFile>
     lateinit var rpc: CordaRPCOps
     lateinit var usernameLabel: Label
 
@@ -141,7 +162,7 @@ class ChatUIController {
         messageEdit.text = "Sending ..."
         messageEdit.isDisable = true
         try {
-            rpc.startFlow(::SendChat, identitiesList.selectionModel.selectedItem.party, message)
+            rpc.startFlow(::SendChat, identitiesList.selectionModel.selectedItem.party, message, null)
         } finally {
             messageEdit.isDisable = false
             messageEdit.text = ""
@@ -149,20 +170,56 @@ class ChatUIController {
     }
 
     private fun sendFile(file: Path) {
-        val fo = File.createTempFile("/tmp",".corda.zip")
-        println(" --> tmp file is $fo")
+        messageEdit.text = "Sending file..."
+        messageEdit.isDisable = true
+        try {
+            val fo = File.createTempFile("/tmp", ".corda.zip")
+            ZipOutputStream(fo.outputStream()).use { zos ->
+                zos.putNextEntry(ZipEntry(file.fileName.toString()))
+                Files.newInputStream(file).use {
+                    it.copyTo(zos)
+                }
+            }
+            val attachmentHash = rpc.uploadAttachment(fo.inputStream())
+            fo.delete()
 
-        ZipOutputStream(fo.outputStream()).use { zos ->
-            zos.putNextEntry(ZipEntry(file.fileName.toString()))
-            Files.newInputStream(file).use {
-                it.copyTo(zos)
+            textArea.text += "File $file uploaded as hash $attachmentHash\n"
+            rpc.startFlow(::SendChat, identitiesList.selectionModel.selectedItem.party, file.fileName.toString(), attachmentHash)
+        } finally {
+            messageEdit.isDisable = false
+            messageEdit.text = ""
+        }
+    }
+
+    fun onFileReceived(stage: Stage): () -> Unit {
+        return {
+            val fc = FileChooser()
+            fc.initialFileName = "yo.txt"
+            val file = fc.showSaveDialog(stage)
+            println("Writing to $file")
+        }
+    }
+
+    /*
+        MenuItem cmItem2 = new MenuItem("Save Image");
+        cmItem2.setOnAction(new EventHandler<ActionEvent>() {
+            public void handle(ActionEvent e) {
+                FileChooser fileChooser = new FileChooser();
+                fileChooser.setTitle("Save Image");
+                System.out.println(pic.getId());
+                File file = fileChooser.showSaveDialog(stage);
+                if (file != null) {
+                    try {
+                        ImageIO.write(SwingFXUtils.fromFXImage(pic.getImage(),
+                                null), "png", file);
+                    } catch (IOException ex) {
+                        System.out.println(ex.getMessage());
+                    }
+                }
             }
         }
-
-        val attachmentHash = rpc.uploadAttachment(fo.inputStream())
-        println("File uploaded as $attachmentHash")
-        textArea.text += "File $file sent as hash $attachmentHash\n"
-    }
+        );
+    */
     fun onMoo(event: ActionEvent) {
         val m = if (messageEdit.text.isBlank()) "moo" else messageEdit.text
         send(":cow:$m")
@@ -185,7 +242,7 @@ class ChatUIController {
                 }
                 it.consume()
             }
-            messageEdit.setOnDragDropped{
+            messageEdit.setOnDragDropped {
                 val db = it.dragboard
                 if (db.hasFiles()) {
                     db.files.forEach {
@@ -208,15 +265,44 @@ class ChatUIController {
             if (it.containsType<Chat.Message>()) {
                 val stateAndRef = it.produced.single()
                 textArea.text += "[${Instant.now().formatted}] ${stateAndRef.from}: ${stateAndRef.msg}\n"
+                if (stateAndRef.state.data.secureHash != null ) {
+                    textArea.text += "Attachment: ${stateAndRef.state.data.secureHash}\n"
+                } else {
+                    textArea.text += "No attachment\n"
+                }
+
+                if (stateAndRef.state.data.secureHash != null) {
+                    with (stateAndRef.state.data) {
+                        fileTransferStateReceived(message, secureHash!!)
+                    }
+                }
             }
         }
+    }
+
+    private fun fileTransferStateReceived(message: String, secureHash: SecureHash) {
+        val alert = Alert(AlertType.CONFIRMATION)
+        alert.title = "File received"
+        alert.headerText = "File $message received"
+        alert.contentText = ""
+
+        val buttonTypeDownload = ButtonType("Download")
+        val buttonTypeCancel = ButtonType("Ignore", ButtonData.CANCEL_CLOSE)
+
+        alert.buttonTypes.setAll(buttonTypeDownload, buttonTypeCancel)
+
+        val result = alert.showAndWait()
+        if (result.get() === buttonTypeDownload) {
+            // ... user chose "One"
+        }
+
     }
 
     private fun displayOldMessages(messages: DataFeed<Vault.Page<Chat.Message>, Vault.Update<Chat.Message>>) {
         // Get a list of timestamps and messages.
         val timestamps = messages.snapshot.statesMetadata.map { it.recordedTime }
         val fromAndMessages = messages.snapshot.states.map {
-            Pair(it.from, it.msg)
+            Triple(it.from, it.msg, it.state.data.secureHash)
         }
 
         // Line them up and then sort them by time.
