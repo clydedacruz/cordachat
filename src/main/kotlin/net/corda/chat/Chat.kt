@@ -307,7 +307,7 @@ class ChatUIController {
                         } else {
                             Files.createDirectory(Paths.get(inc))
                         }
-                        File("$inc/$destinationFilename").writeBytes(jar.readBytes())
+                        File("$destinationFilename").writeBytes(jar.readBytes())
                     }
                     textArea.text += "Written to $destinationFilename\n"
                 }
