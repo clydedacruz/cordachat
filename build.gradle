@@ -1,5 +1,8 @@
 buildscript {
-    ext.corda_version = "3.2-corda"
+    ext.corda_release_group = 'net.corda'
+   // ext.corda_version = "3.2-corda"
+    ext.corda_release_version = '3.2-corda'
+
     ext.corda_gradle_plugins_version = "3.1.0"
     ext.quasar_version = "0.7.9"
 
@@ -33,6 +36,8 @@ repositories {
     maven {
         url 'https://ci-artifactory.corda.r3cev.com/artifactory/corda'
     }
+    maven { url 'https://ci-artifactory.corda.r3cev.com/artifactory/corda-releases' }
+
 }
 
 apply plugin: 'net.corda.plugins.cordapp'
@@ -43,8 +48,8 @@ dependencies {
     compile "org.jetbrains.kotlin:kotlin-stdlib:1.1.60"
 
     // Corda integration dependencies
-    cordaCompile "net.corda:corda-rpc:$corda_version"
-    cordaCompile "net.corda:corda-jfx:$corda_version"
+    cordaCompile "net.corda:corda-rpc:$corda_release_version"
+    cordaCompile "net.corda:corda-jfx:$corda_release_version"
 
     cordaCompile "org.slf4j:slf4j-simple:1.7.25"
     cordaCompile "com.github.ricksbrown:cowsay:1.0.3"
@@ -58,3 +63,36 @@ tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
         javaParameters = true   // Useful for reflection.
     }
 }
+/*
+
+task deployNodes(type: net.corda.plugins.Cordform, dependsOn: ['jar']) {
+}
+
+    directory "./build/nodes"
+    node {
+        name "O=Notary,L=London,C=GB"
+        notary = [validating: false]
+        p2pPort 10006
+        cordapps = ["$corda_release_group:corda-finance:$corda_version"]
+    }
+    node {
+        name "O=PartyA,L=London,C=GB"
+        p2pPort 10007
+        rpcSettings {
+            address("localhost:10008")
+            adminAddress("localhost:10048")
+        }
+        webPort 10009
+        rpcUsers = [[user: "user1", "password": "test", "permissions": ["ALL"]]]
+    }
+    node {
+        name "O=PartyB,L=New York,C=US"
+        p2pPort 10010
+        rpcSettings {
+            address("localhost:10011")
+            adminAddress("localhost:10051")
+        }
+        webPort 10012
+        rpcUsers = [[user: "user1", "password": "test", "permissions": ["ALL"]]]
+    }
+}*/

@@ -47,7 +47,8 @@ import javafx.scene.control.ButtonType
 import javafx.scene.control.ButtonBar.ButtonData
 import javafx.scene.control.Alert.AlertType
 import javafx.scene.control.Alert
-
+import java.util.jar.JarInputStream
+import kotlin.streams.toList
 
 
 class Chat : Contract {
@@ -115,6 +116,7 @@ class ChatApp : Application() {
         stage.scene = Scene(fxml.load())
         stage.scene.stylesheets.add("/net/corda/chat/chat.css")
         val controller: ChatUIController = fxml.getController()
+        controller.stage = stage
         val rpc = rpc   // Allow smart cast
         if (rpc == null) {
             Alert(Alert.AlertType.ERROR, "Could not connect to server: $host").showAndWait()
@@ -131,7 +133,7 @@ class ChatApp : Application() {
         }
         stage.show()
 
-        controller.onFileReceived(stage)
+      // controller.onFileReceived(stage)
 
     }
 }
@@ -147,12 +149,15 @@ class ChatUIController {
 
     }
 
+    lateinit var me: Party
     lateinit var textArea: TextArea
     lateinit var messageEdit: TextField
     lateinit var identitiesList: ListView<ClickableParty>
     lateinit var fileList: ListView<ClickableFile>
     lateinit var rpc: CordaRPCOps
     lateinit var usernameLabel: Label
+    lateinit var stage: Stage
+
 
     fun sendMessage(event: ActionEvent) {
         send(messageEdit.text)
@@ -191,6 +196,7 @@ class ChatUIController {
         }
     }
 
+    /*
     fun onFileReceived(stage: Stage): () -> Unit {
         return {
             val fc = FileChooser()
@@ -199,33 +205,14 @@ class ChatUIController {
             println("Writing to $file")
         }
     }
-
-    /*
-        MenuItem cmItem2 = new MenuItem("Save Image");
-        cmItem2.setOnAction(new EventHandler<ActionEvent>() {
-            public void handle(ActionEvent e) {
-                FileChooser fileChooser = new FileChooser();
-                fileChooser.setTitle("Save Image");
-                System.out.println(pic.getId());
-                File file = fileChooser.showSaveDialog(stage);
-                if (file != null) {
-                    try {
-                        ImageIO.write(SwingFXUtils.fromFXImage(pic.getImage(),
-                                null), "png", file);
-                    } catch (IOException ex) {
-                        System.out.println(ex.getMessage());
-                    }
-                }
-            }
-        }
-        );
-    */
+*/
     fun onMoo(event: ActionEvent) {
         val m = if (messageEdit.text.isBlank()) "moo" else messageEdit.text
         send(":cow:$m")
     }
 
     fun linkPartyList(me: Party) {
+        this.me = me
         usernameLabel.text = "@" + me.name.organisation.toLowerCase()
         val (current, updates) = rpc.networkMapFeed()
         val names: List<ClickableParty> = current
@@ -267,17 +254,15 @@ class ChatUIController {
                 textArea.text += "[${Instant.now().formatted}] ${stateAndRef.from}: ${stateAndRef.msg}\n"
                 if (stateAndRef.state.data.secureHash != null ) {
                     textArea.text += "Attachment: ${stateAndRef.state.data.secureHash}\n"
-                } else {
-                    textArea.text += "No attachment\n"
                 }
-
-                if (stateAndRef.state.data.secureHash != null) {
-                    with (stateAndRef.state.data) {
-                        fileTransferStateReceived(message, secureHash!!)
+                with(stateAndRef.state.data) {
+                    if (secureHash != null && this.to == me)
+                    {
+                        fileTransferStateReceived(message, secureHash)
                     }
                 }
+                }
             }
-        }
     }
 
     private fun fileTransferStateReceived(message: String, secureHash: SecureHash) {
@@ -285,17 +270,49 @@ class ChatUIController {
         alert.title = "File received"
         alert.headerText = "File $message received"
         alert.contentText = ""
-
         val buttonTypeDownload = ButtonType("Download")
         val buttonTypeCancel = ButtonType("Ignore", ButtonData.CANCEL_CLOSE)
-
         alert.buttonTypes.setAll(buttonTypeDownload, buttonTypeCancel)
+       // val result = alert.showAndWait()
+        class MockResult {
+           open fun get() = buttonTypeDownload
+       }
 
-        val result = alert.showAndWait()
-        if (result.get() === buttonTypeDownload) {
-            // ... user chose "One"
+        val result = MockResult()
+
+        if (result.get() === buttonTypeDownload)
+        {
+            rpc.attachmentExists(secureHash)
+            val path = Paths.get(message)
+            val attachment = rpc.openAttachment(secureHash)
+            var file_name_data: Pair<String, ByteArray>? = null
+            JarInputStream(attachment).use { jar ->
+                while (true) {
+                    val nje = jar.nextEntry ?: break
+                    if (nje.isDirectory) {
+                        continue
+                    }
+                    var destinationFilename = "${nje.name}"
+                    if (System.getProperty("os.version") != "10.14") { // Don't trigger Mac os 14 Java FX bug.
+                        with(FileChooser()) {
+                            initialFileName = destinationFilename
+                            var file = showSaveDialog(stage)
+                            destinationFilename = file.name
+                            file
+                        }.writeBytes(jar.readBytes())
+                    } else {
+                        var inc = "incoming"
+                        if (File(inc).isDirectory && File(inc).exists()) {
+                            destinationFilename = "$inc/$destinationFilename"
+                        } else {
+                            Files.createDirectory(Paths.get(inc))
+                        }
+                        File("$inc/$destinationFilename").writeBytes(jar.readBytes())
+                    }
+                    textArea.text += "Written to $destinationFilename\n"
+                }
+            }
         }
-
     }
 
     private fun displayOldMessages(messages: DataFeed<Vault.Page<Chat.Message>, Vault.Update<Chat.Message>>) {
